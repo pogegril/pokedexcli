@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/pogegril/pokedexcli/internal/cache"
 	"github.com/pogegril/pokedexcli/internal/network"
 	"github.com/pogegril/pokedexcli/internal/repl"
 )
@@ -23,6 +25,7 @@ var commands map[string]cliCommand
 type config struct {
 	Next                    string
 	Previous  		string
+	Cache                   *pokecache.Cache
 }
 
 func main() {
@@ -32,6 +35,7 @@ func main() {
 	cfg := &config{
 		Next: "https://pokeapi.co/api/v2/location-area/",
 		Previous: "",
+		Cache: pokecache.NewCache(10 * time.Second),
 	}
 
 	// Commands' registry
@@ -110,21 +114,31 @@ func commandHelp(cfg *config) error {
 
 // Displays the next locations
 func commandMap(cfg *config) error {
-	content, err := network.Search(cfg.Next)
-	if err != nil {
-		return fmt.Errorf("Failed to get next map locations: %w", err)
-	}	
+	var err error
 
+	// Looks for requested page in cache if possible or requests it
+	content, isCached := cfg.Cache.Get(cfg.Next)
+	if !isCached {
+		content, err = network.Search(cfg.Next)
+		if err != nil {
+			return fmt.Errorf("Failed to get next map locations: %w", err)
+		}	
+		cfg.Cache.Add(cfg.Next, content)
+	}
+
+	// Load result
 	var page network.MapPage
 	err = unmarshal(content, &page)
 	if err != nil {
 		return fmt.Errorf("Failed to read next map locations: %w", err)
 	}	
 
+	// Display map page
 	for _, result := range page.Results {
 		fmt.Println(result.Name)
 	}
 
+	// Update page urls
 	if page.Next != nil {
 		cfg.Next = *page.Next
 	}
@@ -136,22 +150,32 @@ func commandMap(cfg *config) error {
 
 // Displays the previous locations
 func commandMapBack(cfg *config) error {
-	content, err := network.Search(cfg.Previous)
-	if err != nil {
-		fmt.Println("You're on the first page")
-		return err // Fails silently to not clutter if user is in the first page
-	}	
+	var err error
 
+	// Looks for requested page in cache if possible or requests it
+	content, isCached := cfg.Cache.Get(cfg.Previous)
+	if !isCached {
+		content, err = network.Search(cfg.Previous)
+		if err != nil {
+			fmt.Println("You're on the first page")
+			return err // Fails silently to not clutter if user is in the first page
+		}	
+		cfg.Cache.Add(cfg.Previous, content)
+	}
+
+	// Load result
 	var page network.MapPage
 	err = unmarshal(content, &page)
 	if err != nil {
 		return err
 	}	
 
+	// Display map page
 	for _, result := range page.Results {
 		fmt.Println(result.Name)
 	}
 
+	// Update page urls
 	if page.Next != nil {
 		cfg.Next = *page.Next
 	}
