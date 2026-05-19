@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/pogegril/pokedexcli/network"
 	"github.com/pogegril/pokedexcli/repl"
-	"github.com/pogegril/pokedexcli/net"
 )
 
 // CLI Commands struct type
@@ -17,24 +17,13 @@ type cliCommand struct {
 	description             string
 	callback func(*config)  error
 }
+var commands map[string]cliCommand
 
 // User runtime config
 type config struct {
 	Next                    string
 	Previous  		string
 }
-
-// Page results
-type mapPage struct {
-	Next      *string
-	Previous  *string
-	Results []struct {
-		Name  string 
-		URL   string
-	}
-}
-
-var commands map[string]cliCommand
 
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
@@ -91,15 +80,12 @@ func main() {
 		}
 
 		// Execute command
-		err := command.callback(cfg)
-		if err != nil {
-			fmt.Println("Error: ", err)
-		}
+		command.callback(cfg)
 	} 
 }
 
 // Loads the search results from a byte slice
-func unmarshal(data []byte, page *mapPage) error {
+func unmarshal(data []byte, page *network.MapPage) error {
 	return json.Unmarshal(data, page)
 }
 
@@ -124,12 +110,12 @@ func commandHelp(cfg *config) error {
 
 // Displays the next locations
 func commandMap(cfg *config) error {
-	content, err := net.Search(cfg.Next)
+	content, err := network.Search(cfg.Next)
 	if err != nil {
 		return fmt.Errorf("Failed to get next map locations: %w", err)
 	}	
 
-	var page mapPage
+	var page network.MapPage
 	err = unmarshal(content, &page)
 	if err != nil {
 		return fmt.Errorf("Failed to read next map locations: %w", err)
@@ -150,16 +136,16 @@ func commandMap(cfg *config) error {
 
 // Displays the previous locations
 func commandMapBack(cfg *config) error {
-	content, err := net.Search(cfg.Previous)
+	content, err := network.Search(cfg.Previous)
 	if err != nil {
 		fmt.Println("You're on the first page")
-		return fmt.Errorf("Failed to get previous map locations: %w", err)
+		return err // Fails silently to not clutter if user is in the first page
 	}	
 
-	var page mapPage
+	var page network.MapPage
 	err = unmarshal(content, &page)
 	if err != nil {
-		return fmt.Errorf("Failed to read previous map locations: %w", err)
+		return err
 	}	
 
 	for _, result := range page.Results {
@@ -171,6 +157,8 @@ func commandMapBack(cfg *config) error {
 	}
 	if page.Previous != nil {
 		cfg.Previous = *page.Previous
+	} else {
+		cfg.Previous = ""
 	}
 	return err
 }
