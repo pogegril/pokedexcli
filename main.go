@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/pogegril/pokedexcli/network"
-	"github.com/pogegril/pokedexcli/repl"
+	"github.com/pogegril/pokedexcli/internal/network"
+	"github.com/pogegril/pokedexcli/internal/repl"
 )
 
 // CLI Commands struct type
