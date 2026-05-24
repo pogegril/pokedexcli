@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"time"
 
@@ -13,33 +14,30 @@ import (
 	"github.com/pogegril/pokedexcli/internal/repl"
 )
 
+// User runtime config
+type config struct {
+	Commands                *map[string]cliCommand
+	Next                    string
+	Previous  		string
+	Search                  []string
+	Cache                   *pokecache.Cache
+	Pokedex                 map[string]network.Pokemon
+	Rng                     *rand.Rand
+}
+
 // CLI Commands struct type
 type cliCommand struct {
 	name                    string
 	description             string
 	callback func(*config)  error
 }
-var commands map[string]cliCommand
-
-// User runtime config
-type config struct {
-	Next                    string
-	Previous  		string
-	Cache                   *pokecache.Cache
-}
 
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
-
-	// Pageholder
-	cfg := &config{
-		Next: "https://pokeapi.co/api/v2/location-area/",
-		Previous: "",
-		Cache: pokecache.NewCache(10 * time.Second),
-	}
+	pokedex := make(map[string]network.Pokemon) 
 
 	// Commands' registry
-	commands = map[string]cliCommand{
+	commands := map[string]cliCommand{
 		"help": {
 			name:        "help",
 			description: "Displays a help message",
@@ -60,7 +58,39 @@ func main() {
 			description: "Displays the previous 20 locations",
 			callback:    commandMapBack,
 		},
+		"explore": {
+			name:        "explore",
+			description: "Displays pokemon that can be found in this area",
+			callback:    commandExplore,
+		},
+		"catch": {
+			name:        "catch",
+			description: "Attempts to catch a pokemon to detail",
+			callback:    commandCatch,
+		},
+		"inspect": {
+			name:        "inspect",
+			description: "Displays pokémon's information if caught",
+			callback:    commandInspect,
+		},
+		"pokedex": {
+			name:        "pokedex",
+			description: "Displays caught pokémon",
+			callback:    commandPokedex,
+		},
 	}
+
+	// Config pointers
+	cfg := &config{
+		Next: "https://pokeapi.co/api/v2/location-area/",
+		Previous: "",
+		Search: []string{},
+		Cache: pokecache.NewCache(10 * time.Second),
+		Pokedex: pokedex,
+		Rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+		Commands: &commands,
+	}
+
 
 	// Program's loop
 	for {
@@ -68,14 +98,14 @@ func main() {
 		fmt.Printf("Pokedex > ")
 		scanner.Scan()
 		input := scanner.Text()
-		search := repl.CleanInput(input)	
+		cfg.Search = repl.CleanInput(input)	
 
 		// No search
-		if (len(search) == 0) {
+		if (len(cfg.Search) == 0) {
 			continue
 		}
 
-		command, exists := commands[search[0]]
+		command, exists := commands[cfg.Search[0]]
 
 		// Command not found
 		if !exists {
@@ -89,7 +119,7 @@ func main() {
 }
 
 // Loads the search results from a byte slice
-func unmarshal(data []byte, page *network.MapPage) error {
+func unmarshal(data []byte, page any) error {
 	return json.Unmarshal(data, page)
 }
 
@@ -105,7 +135,7 @@ func commandHelp(cfg *config) error {
 	fmt.Println("Welcome to the Pokedex!")
 	fmt.Println("Usage:\n ")
 
-	for name, command := range commands {
+	for name, command := range *cfg.Commands {
 		commandInfo := fmt.Sprintf("%s: %s", name, command.description)
 		fmt.Println(commandInfo)
 	}
@@ -185,4 +215,117 @@ func commandMapBack(cfg *config) error {
 		cfg.Previous = ""
 	}
 	return err
+}
+
+// Displays pokemon found in the received location
+func commandExplore(cfg *config) error {
+	var err error
+	url := "https://pokeapi.co/api/v2/location-area/" + cfg.Search[1] 
+
+	// Looks for required page in cache if possible or requests it
+	content, isCached := cfg.Cache.Get(url)
+	if !isCached {
+		content, err = network.Search(url)
+		if err != nil {
+			return fmt.Errorf("Failed to explore location details: %w", err)
+		}	
+		cfg.Cache.Add(url, content)
+	}
+
+	// Load result
+	var page network.ExplorePage
+	err = unmarshal(content, &page)
+	if err != nil {
+		return err
+	}	
+
+	// Display pokemon in the area
+	for _, encounter := range page.PokemonEncounters {
+		fmt.Println(encounter.Pokemon.Name)
+	}
+	return err
+}
+
+// Attempts to catch a Pokemon and add it to the Pokedex
+func commandCatch(cfg *config) error {
+	var err error
+	url := "https://pokeapi.co/api/v2/pokemon/" + cfg.Search[1]
+
+	content, isCached := cfg.Cache.Get(url)
+	if !isCached {
+		content, err = network.Search(url)
+		if err != nil {
+			return fmt.Errorf("Failed to find pokémon: %w", err)
+		}	
+		cfg.Cache.Add(url, content)
+	}
+
+	// Load result
+	var pokemon network.Pokemon
+	err = unmarshal(content, &pokemon)
+	if err != nil {
+		return err
+	}	
+	fmt.Println("Throwing a Pokeball at " + *pokemon.Name + "...")
+
+	// Pseudo-random catch rate
+	r := cfg.Rng.Int31n(101)
+	catchRate := int32(75) - (int32(*pokemon.Experience) / int32(10))
+	if r < catchRate {
+		fmt.Println(*pokemon.Name + " was caught!")
+		cfg.Pokedex[*pokemon.Name] = pokemon	
+	} else {
+		fmt.Println(*pokemon.Name + " escaped!")
+	}
+	return err
+}
+
+// Displays the pokemon's information if caught previously
+func commandInspect(cfg *config) error {
+	var err error
+	url := "https://pokeapi.co/api/v2/pokemon/" + cfg.Search[1]
+
+	content, isCached := cfg.Cache.Get(url)
+	if !isCached {
+		fmt.Println("You have not caught that Pokémon")
+		return nil
+	}
+
+	// Load result
+	var pokemon network.Pokemon
+	err = unmarshal(content, &pokemon)
+	if err != nil {
+		return err
+	}	
+
+	// Display pokemon entry
+	fmt.Println("Name: " + *pokemon.Name)
+
+	height := fmt.Sprintf("Height: %d", *pokemon.Height)
+	fmt.Println(height)
+
+	weight := fmt.Sprintf("Weight: %d", *pokemon.Weight)
+	fmt.Println(weight + "\n")
+
+	fmt.Println("Stats:")
+	for _, statEntry := range pokemon.Stats {
+		statLine := fmt.Sprintf("  -%s: %d", *statEntry.Stat.Name, *statEntry.Value)
+		fmt.Println(statLine)
+	}
+
+	fmt.Println("Types")
+	for _, typeEntry := range pokemon.Types {
+		fmt.Println("  -" + *typeEntry.Type.Name)	
+	}
+	return err
+}
+
+// Displays caught pokemon
+func commandPokedex(cfg *config) error {
+	fmt.Println("Your Pokedex:")
+
+	for _, pokemon := range cfg.Pokedex {
+		fmt.Println("  -" + *pokemon.Name)
+	}
+	return nil
 }
