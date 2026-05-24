@@ -241,7 +241,7 @@ func commandExplore(cfg *config) error {
 
 	// Display pokemon in the area
 	for _, encounter := range page.PokemonEncounters {
-		fmt.Println(encounter.Pokemon.Name)
+		fmt.Println(*encounter.Pokemon.Name)
 	}
 	return err
 }
